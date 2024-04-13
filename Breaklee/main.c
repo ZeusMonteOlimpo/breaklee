@@ -1,120 +1,92 @@
 #include "Base.h"
+#include <stdint.h>
+#include <stdio.h>
+#include <stdlib.h>
 
-Void PrintUsage() {
-    fprintf(
-        stdout,
+void PrintUsage() {
+    printf(
         "\n"
         "USAGE:\n"
-        "breaklee <pattern>\n"
+        "  breaklee <pattern>\n"
         "\n"
         "ARGUMENTS:\n"
-        "   pattern         File path pattern\n"
+        "  pattern         File path pattern\n"
         "\n"
-    ); 
+    );
 }
 
-CString SkipWhitespaceAndNewlines(
-    CString String
-) {
-    CString Cursor = String;
-    while (*Cursor != '0') {
-        switch (*Cursor) {
-        case 0x09:
-        case 0x20:
-        case 0x0A:
-        case 0x0B:
-        case 0x0C:
-        case '\r':
-            Cursor += 1;
-            break;
+const char* SkipWhitespaceAndNewlines(const char* str) {
+    while (*str == '\t' || *str == ' ' || *str == '\n' ||
+           *str == '\v' || *str == '\f' || *str == '\r') {
+        str++;
+    }
+    return str;
+}
 
-        default:
-            return Cursor;
+void EncryptDecryptFile(const char* fileName, FileRef file, void* userData) {
+    uint8_t* source = NULL;
+    int32_t sourceLength = 0;
+    uint8_t* buffer = NULL;
+    int32_t bufferLength = 0;
+    ArchiveRef archive = NULL;
+    FileRef decryptedFile = NULL;
+    bool errorOccurred = false;
+
+    if (!FileRead(file, &source, &sourceLength)) {
+        errorOccurred = true;
+    } else if (!InflateDecryptBuffer(source, sourceLength, &buffer, &bufferLength)) {
+        LogMessageFormat(LOG_LEVEL_ERROR, "Couldn't decrypt file `%s`", fileName);
+        errorOccurred = true;
+    } else {
+        bool isBinary = (*SkipWhitespaceAndNewlines((char*)buffer) != '<');
+        char* outputFilePath = PathRemoveExtensionNoAlloc(fileName);
+        PathAppend(outputFilePath, isBinary ? ".dat" : ".xml");
+
+        decryptedFile = FileCreate(outputFilePath);
+        if (!decryptedFile) {
+            LogMessageFormat(LOG_LEVEL_ERROR, "Error creating file `%s`", outputFilePath);
+            errorOccurred = true;
+        } else {
+            LogMessageFormat(LOG_LEVEL_INFO, "Writing file `%s`", outputFilePath);
+            if (!FileWrite(decryptedFile, buffer, bufferLength, false)) {
+                LogMessageFormat(LOG_LEVEL_ERROR, "Error writing file `%s`", outputFilePath);
+                errorOccurred = true;
+            }
         }
     }
 
-    UNREACHABLE("Unreachable");
+    free(source);
+    free(buffer);
+    if (archive) ArchiveDestroy(archive);
+    if (decryptedFile) FileClose(decryptedFile);
+
+    if (errorOccurred) {
+        // Handle error
+    }
 }
 
-Void EncryptDecryptFile(
-    CString FileName,
-    FileRef File,
-    Void* UserData
-) {
-    UInt8* Source = NULL;
-    Int32 SourceLength = 0;
-    UInt8* Buffer = NULL;
-    Int32 BufferLength = 0;
-    ArchiveRef Archive = NULL;
-    FileRef DecryptedFile = NULL;
-
-    if (!FileRead(File, &Source, &SourceLength)) goto cleanup;
-
-    if (!InflateDecryptBuffer(Source, SourceLength, &Buffer, &BufferLength)) {
-        LogMessageFormat(LOG_LEVEL_ERROR, "Couldn't decrypt file `%s`", FileName);
-        goto cleanup;
-    }
-
-    Bool IsBinary = (*SkipWhitespaceAndNewlines((Char*)Buffer) != '<');
-    CString OutputFilePath = PathRemoveExtensionNoAlloc(FileName);
-    PathAppend(OutputFilePath, IsBinary ? ".dat" : ".xml");
-
-    DecryptedFile = FileCreate(OutputFilePath);
-    if (!DecryptedFile) {
-        LogMessageFormat(LOG_LEVEL_ERROR, "Error creating file `%s`", OutputFilePath);
-        goto cleanup;
-    }
-
-    LogMessageFormat(LOG_LEVEL_INFO, "Writing file `%s`", OutputFilePath);
-    if (!FileWrite(DecryptedFile, Buffer, BufferLength, FALSE)) {
-        LogMessageFormat(LOG_LEVEL_ERROR, "Error writing file `%s`", OutputFilePath);
-        goto cleanup;
-    }
-
-cleanup:
-
-    if (Source) free(Source);
-    if (Buffer) free(Buffer);
-    if (Archive) ArchiveDestroy(Archive);
-    if (DecryptedFile) FileClose(DecryptedFile);
-}
-
-Int32 main(
-    Int32 ArgumentCount,
-    CString* Arguments
-) {
-    if (ArgumentCount < 2) {
+int main(int argc, char* argv[]) {
+    if (argc < 2) {
         LogMessage(LOG_LEVEL_ERROR, "Missing argument `pattern`");
-        goto error;
+        PrintUsage();
+        return EXIT_FAILURE;
     }
 
     if (!EncryptionLoadLibrary()) {
         LogMessage(LOG_LEVEL_ERROR, "Error loading zlib library");
-        goto error;
+        return EXIT_FAILURE;
     }
 
-    CString Pattern = Arguments[1];
-    Int32 ProcessedFileCount = FilesProcess(
-        Pattern,
-        &EncryptDecryptFile,
-        NULL
-    );
+    const char* pattern = argv[1];
+    int processedFileCount = FilesProcess(pattern, &EncryptDecryptFile, NULL);
 
-    if (ProcessedFileCount < 1) {
-        LogMessageFormat(LOG_LEVEL_WARNING, "No files found for pattern `%s`", Pattern);
-        goto error;
+    if (processedFileCount < 1) {
+        LogMessageFormat(LOG_LEVEL_WARNING, "No files found for pattern `%s`", pattern);
     }
 
     EncryptionUnloadLibrary();
     DiagnosticTeardown();
-    
-    return EXIT_SUCCESS;
 
-error:
-
-    EncryptionUnloadLibrary();
-    DiagnosticTeardown();
-    PrintUsage();
-
-    return EXIT_FAILURE;
+    return processedFileCount < 1 ? EXIT_FAILURE : EXIT_SUCCESS;
 }
+
